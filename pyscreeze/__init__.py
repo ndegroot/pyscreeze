@@ -580,6 +580,9 @@ def _screenshot_osx(imageFilename=None, region=None):
         else:
             # Get full screen for screenshot
             im = ImageGrab.grab()
+            # expected behaviour by pyautogui see
+            if imageFilename:
+                im.save(imageFilename)
     return im
 
 

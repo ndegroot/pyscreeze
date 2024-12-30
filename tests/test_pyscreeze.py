@@ -12,6 +12,25 @@ if os.path.exists(os.path.join(scriptFolder, 'PIL.py')):
 from PIL import Image
 
 
+def get_screens_resolution() -> list[tuple[int, int]]:
+    from AppKit import NSScreen, NSDeviceSize, NSDeviceResolution
+    from Quartz import CGDisplayScreenSize
+
+    resolutions = []
+    for i, screen in enumerate(NSScreen.screens(), 1):
+        description = screen.deviceDescription()
+        pw, ph = description[NSDeviceSize].sizeValue()
+        rx, ry = description[NSDeviceResolution].sizeValue()
+        mmw, mmh = CGDisplayScreenSize(description["NSScreenNumber"])
+        scale_factor = screen.backingScaleFactor()
+        pw *= scale_factor
+        ph *= scale_factor
+        print(f"display #{i}: {mmw:.1f}×{mmh:.1f} mm; {pw:.0f}×{ph:.0f} pixels; {rx:.0f}×{ry:.0f} dpi")
+        resolutions.append((pw, ph))
+
+    return resolutions
+
+
 # Change the cwd to this file's folder, because that's where the test image files are located.
 scriptFolder = os.path.dirname(os.path.realpath(__file__))
 os.chdir(scriptFolder)
@@ -33,16 +52,28 @@ if sys.platform.startswith('linux'):
         RUNNING_WAYLAND = True
         RUNNING_X11 = False
 
+
 # Helper functions to get current screen resolution on Windows, Mac OS X, or Linux.
 # Non-Windows platforms require additional modules:
 #   OS X: sudo pip3 install pyobjc-core
 #         sudo pip3 install pyobjc
 #   Linux: sudo pip3 install python3-Xlib
-def resolutionOSX():
+def resolution_osx():
+    """ function gets the screen resolution, but on a MBP (retina)
+    that's not the resolution of the screenshot..."""
+
     return Quartz.CGDisplayPixelsWide(0), Quartz.CGDisplayPixelsHigh(0)
+
+
+def resolution_osx_2():
+    """ returns the 'real' resolution of the first screen"""
+    screens_resolution = get_screens_resolution()
+    return screens_resolution[0]
+
 
 def resolutionX11():
     return _display.screen().width_in_pixels, _display.screen().height_in_pixels
+
 
 def resolutionWayland():
     xrandrOutput = subprocess.run(['xrandr'], shell=True, capture_output=True, text=True).stdout
@@ -51,13 +82,15 @@ def resolutionWayland():
         raise Exception('xrandr output does not list the wayland resolution. xrandr output:\n' + xrandrOutput)
     return int(mo.group(1)), int(mo.group(2))
 
+
 def resolutionWin32():
-    return (ctypes.windll.user32.GetSystemMetrics(0), ctypes.windll.user32.GetSystemMetrics(1))
+    return ctypes.windll.user32.GetSystemMetrics(0), ctypes.windll.user32.GetSystemMetrics(1)
+
 
 # Assign the resolution() function to the function appropriate for the platform.
 if sys.platform == 'darwin':
     import Quartz
-    resolution = resolutionOSX
+    resolution = resolution_osx_2
 elif sys.platform == 'win32':
     import ctypes
     resolution = resolutionWin32
@@ -86,7 +119,7 @@ def isPng(filename):
         return fileMagicNumbers == bytes(pngMagicNumbers)
 
 
-# JPG file format magic numbres are FF D8 FF
+# JPG file format magic numbers are FF D8 FF
 jpgMagicNumbers = [255, 216, 255]
 def isJpg(filename):
     fp = open(filename, 'rb')
@@ -125,6 +158,7 @@ class TestMagicNumbers(unittest.TestCase):
         self.assertTrue(isJpg('zophie.jpg'))
         self.assertFalse(isJpg(__file__))
 
+
 class TestGeneral(unittest.TestCase):
     def test_namesDefined(self):
         pyscreeze.locateAll
@@ -136,13 +170,13 @@ class TestGeneral(unittest.TestCase):
         pyscreeze.pixelMatchesColor
         pyscreeze.pixel
 
-
     def test_screenshot(self):
         im = pyscreeze.screenshot(TEMP_FILENAME)
+        im.save(TEMP_FILENAME)
         self.assertTrue(isPng(TEMP_FILENAME))
-        self.assertEqual(im.size, resolution()) # TODO shouldn't this fail on Windows for multi-monitor setups?
+        self.assertEqual(im.size,
+                         resolution())  # TODO shouldn't this fail on Windows for multi-monitor setups?
         os.unlink(TEMP_FILENAME)
-
 
     def test_screenshot_regions(self):
         im = pyscreeze.screenshot(TEMP_FILENAME, region=(0, 0, 100, 150))

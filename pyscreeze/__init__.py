@@ -704,7 +704,7 @@ def center(coords: Union[Box, tuple[int, int, int, int]]) -> Point:
     """
 
     # added code to handle a Box namedtuple. : Done
-    if isinstance(coord,Box):
+    if isinstance(coords,Box):
         return Point(coords.left + int(coords.height / 2), coords.top + int(coords.width / 2))
 
     return Point(coords[0] + int(coords[2] / 2), coords[1] + int(coords[3] / 2))

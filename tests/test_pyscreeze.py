@@ -1,7 +1,18 @@
 import unittest
 import sys
 import os
+from collections.abc import Iterable
 import pyscreeze
+
+_useOpenCV: bool = False
+try:
+    import cv2
+    import numpy
+
+    _useOpenCV = True
+except ImportError:
+    pass  # This is fine, useOpenCV will stay as False.
+
 
 scriptFolder = os.path.dirname(os.path.realpath(__file__))
 # Delete PIL.py, which is made by test_pillow_unavailable.py, just in case it
@@ -10,6 +21,14 @@ if os.path.exists(os.path.join(scriptFolder, 'PIL.py')):
     os.unlink(os.path.join(scriptFolder, 'PIL.py'))
 
 from PIL import Image
+
+
+def recursiveAssertAlmostEqual(testCase, first, second, *args, **kwargs):
+   if isinstance(first, Iterable) and isinstance(second, Iterable):
+      for a, b in zip(first, second):
+         recursiveAssertAlmostEqual(testCase, a, b, *args, **kwargs)
+   else:
+      testCase.assertAlmostEqual(first, second, *args, **kwargs)
 
 
 def get_screens_resolution() -> list[tuple[int, int]]:
@@ -59,7 +78,7 @@ if sys.platform.startswith('linux'):
 #         sudo pip3 install pyobjc
 #   Linux: sudo pip3 install python3-Xlib
 def resolution_osx():
-    """ function gets the screen resolution, but on a MBP (retina)
+    """ function gets the screen resolution, but on an MBP (retina)
     that's not the resolution of the screenshot..."""
 
     return Quartz.CGDisplayPixelsWide(0), Quartz.CGDisplayPixelsHigh(0)
@@ -187,7 +206,6 @@ class TestGeneral(unittest.TestCase):
         self.assertEqual(im.size, (100, 150))
         os.unlink(TEMP_FILENAME)
 
-
     # TODO - lots of warnings about unclosed file handles for these tests.
     def test_locate_filename(self):
         self.assertEqual((94, 94, 4, 4), tuple(pyscreeze.locate('slash.png', 'haystack1.png')))
@@ -207,10 +225,11 @@ class TestGeneral(unittest.TestCase):
         self.assertEqual(pyscreeze.locate('slash.png', 'colornoise.png', grayscale=True), None)
 
     def test_locate_im(self):
-        slashFp = open('slash.png' ,'rb')
-        haystack1Fp = open('haystack1.png' ,'rb')
-        haystack2Fp = open('haystack2.png' ,'rb')
-        colorNoiseFp = open('colornoise.png' ,'rb')
+        slashFp = open('slash.png', 'rb')
+        haystack1Fp = open('haystack1.png', 'rb')
+        haystack2Fp = open('haystack2.png', 'rb')
+        colorNoiseFp = open('colornoise.png', 'rb')
+
         slashIm = Image.open(slashFp)
         haystack1Im = Image.open(haystack1Fp)
         haystack2Im = Image.open(haystack2Fp)
@@ -236,6 +255,35 @@ class TestGeneral(unittest.TestCase):
         haystack1Fp.close()
         haystack2Fp.close()
         colorNoiseFp.close()
+
+    def test_locate_im_sophie(self):
+        haystack3Fp_png = open('zophie.png', 'rb')
+        haystack3Fp_jpg = open('zophie.jpg', 'rb')
+        needle3Fp_png = open('zophie_face.png', 'rb')
+        needle3Fp_jpg = open('zophie_face.jpg', 'rb')
+
+        haystack3Im_png = Image.open(haystack3Fp_png)
+        haystack3Im_jpg = Image.open(haystack3Fp_jpg)
+        needle3FpIm_png = Image.open(needle3Fp_png)
+        needle3FpIm_jpg = Image.open(needle3Fp_jpg)
+
+        self.assertEqual((340, 352, 235, 206), tuple(pyscreeze.locate(needle3FpIm_png, haystack3Im_png)))
+        self.assertEqual((340, 352, 235, 206), tuple(pyscreeze.locate(needle3FpIm_png, haystack3Im_png, grayscale=True)))
+
+        if not _useOpenCV:  # looks like _locateAll_pillow can't handle .jpg files
+            recursiveAssertAlmostEqual(self,(340, 352, 235, 206),
+                                       tuple(pyscreeze.locate(needle3FpIm_jpg, haystack3Im_jpg,
+                                                              confidence=0.75)),
+                                       delta=10)
+            recursiveAssertAlmostEqual(self, (340, 352, 235, 206),
+                                       tuple(pyscreeze.locate(needle3FpIm_jpg, haystack3Im_jpg,
+                                                              confidence=0.75, grayscale=True)),
+                                       delta=10)
+
+        haystack3Fp_png.close()
+        haystack3Fp_jpg.close()
+        needle3Fp_png.close()
+        needle3Fp_png.close()
 
     def test_locateAll_filename(self):
         self.assertEqual(((94, 94, 4, 4),), tuple(pyscreeze.locateAll('slash.png', 'haystack1.png')))

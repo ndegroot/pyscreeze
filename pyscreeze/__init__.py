@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 import errno
-
+from typing import Union, Optional
 from contextlib import contextmanager
 
 from PIL import Image

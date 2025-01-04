@@ -703,7 +703,10 @@ def center(coords):
     Point(x=14, y=15)
     """
 
-    # TODO - one day, add code to handle a Box namedtuple.
+    # added code to handle a Box namedtuple. : Done
+    if isinstance(coord,Box):
+        return Point(coords.left + int(coords.height / 2), coords.top + int(coords.width / 2))
+
     return Point(coords[0] + int(coords[2] / 2), coords[1] + int(coords[3] / 2))
 
 

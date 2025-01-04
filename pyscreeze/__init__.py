@@ -687,7 +687,7 @@ def _steppingFind(needle, haystack, step):
             yield startPos
 
 
-def center(coords):
+def center(coords: Union[Box, Tuple[int, int, int, int]]) -> Point:
     """
     Returns a `Point` object with the x and y set to an integer determined by the format of `coords`.
 

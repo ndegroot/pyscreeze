@@ -52,6 +52,12 @@ if sys.platform == 'win32':
     else:
         _PYGETWINDOW_UNAVAILABLE = False
 
+try:
+    import pywinctl
+except ImportError:
+    _PYWINCTL_UNAVAILABLE = True
+else:
+    _PYWINCTL_UNAVAILABLE = False
 
 GRAYSCALE_DEFAULT = True
 
@@ -156,13 +162,28 @@ class ImageNotFoundException(PyScreezeException):
 def requiresPyGetWindow(wrappedFunction):
     """
     A decorator that marks a function as requiring PyGetWindow to be installed.
-    This raises PyScreezeException if Pillow wasn't imported.
+    This raises PyScreezeException if PyGetWindow wasn't imported.
     """
 
     @functools.wraps(wrappedFunction)
     def wrapper(*args, **kwargs):
         if _PYGETWINDOW_UNAVAILABLE:
             raise PyScreezeException('The PyGetWindow package is required to use this function.')
+        return wrappedFunction(*args, **kwargs)
+
+    return wrapper
+
+
+def requiresPyWinCtl(wrappedFunction):
+    """
+    A decorator that marks a function as requiring PyWinCtl to be installed.
+    This raises PyScreezeException if PyWinCtl wasn't imported.
+    """
+
+    @functools.wraps(wrappedFunction)
+    def wrapper(*args, **kwargs):
+        if _PYWINCTL_UNAVAILABLE:
+            raise PyScreezeException('The PyWinCtl package is required to use this function.')
         return wrappedFunction(*args, **kwargs)
 
     return wrapper
@@ -202,7 +223,7 @@ def _load_cv2(img, grayscale=None):
         else:
             img_cv = img
     elif hasattr(img, 'convert'):
-        # assume its a PIL.Image, convert to cv format
+        # assume it's a PIL.Image, convert to cv format
         img_array = numpy.array(img.convert('RGB'))
         img_cv = img_array[:, :, ::-1].copy()  # -1 does RGB -> BGR
         if grayscale:
@@ -212,7 +233,8 @@ def _load_cv2(img, grayscale=None):
     return img_cv
 
 
-def _locateAll_opencv(needleImage, haystackImage, grayscale=None, limit=10000, region=None, step=1, confidence=0.999):
+def _locateAll_opencv(needleImage, haystackImage, grayscale=None, limit=10000, region=None,
+                      step=1, confidence=0.999, num_best=None, debug=None):
     """
     TODO - rewrite this
         faster but more memory-intensive than pure python
@@ -233,7 +255,7 @@ def _locateAll_opencv(needleImage, haystackImage, grayscale=None, limit=10000, r
     haystackImage = _load_cv2(haystackImage, grayscale)
 
     if region:
-        haystackImage = haystackImage[region[1] : region[1] + region[3], region[0] : region[0] + region[2]]
+        haystackImage = haystackImage[region[1]: region[1] + region[3], region[0]: region[0] + region[2]]
     else:
         region = (0, 0)  # full image; these values used in the yield statement
     if haystackImage.shape[0] < needleImage.shape[0] or haystackImage.shape[1] < needleImage.shape[1]:
@@ -247,25 +269,45 @@ def _locateAll_opencv(needleImage, haystackImage, grayscale=None, limit=10000, r
     else:
         step = 1
 
-    # get all matches at once, credit: https://stackoverflow.com/questions/7670112/finding-a-subimage-inside-a-numpy-image/9253805#9253805
+    # get all matches at once,
+    # credit: https://stackoverflow.com/questions/7670112/finding-a-subimage-inside-a-numpy-image/9253805#9253805
     result = cv2.matchTemplate(haystackImage, needleImage, cv2.TM_CCOEFF_NORMED)
-    match_indices = numpy.arange(result.size)[(result > confidence).flatten()]
-    matches = numpy.unravel_index(match_indices[:limit], result.shape)
+
+    if num_best:
+        # NCdG: the original version doesn't necessary find the *best* matches:
+        # see https://stackoverflow.com/questions/56977429/using-cv-matchtemplate-to-find-multiple-best-matches
+        idx_1d = numpy.argpartition(result.flatten(), -num_best)[-num_best:]
+        matches = numpy.unravel_index(idx_1d, result.shape)
+    else: # original behaviour using confidence
+        match_indices = numpy.arange(result.size)[(result > confidence).flatten()]
+        matches = numpy.unravel_index(match_indices[:limit], result.shape)
 
     if len(matches[0]) == 0:
         if USE_IMAGE_NOT_FOUND_EXCEPTION:
             raise ImageNotFoundException('Could not locate the image (highest confidence = %.3f)' % result.max())
         else:
             return
+    if debug:
+        cv2.normalize(result, result, 0, 1, cv2.NORM_MINMAX, -1)
+        _minVal, _maxVal, min_loc, max_loc = cv2.minMaxLoc(result, None)
 
+        match_loc = max_loc
+
+        cv2.rectangle(haystackImage,
+                      match_loc, (match_loc[0] + needleImage.shape[1], match_loc[1] + needleImage.shape[0]),
+                      (0, 0, 0), 2, 8,
+                      0)
+        # create and save result img
+        result = Image.fromarray(haystackImage)
+        result.save("debug_result.png")
     # use a generator for API consistency:
     matchx = matches[1] * step + region[0]  # vectorized
     matchy = matches[0] * step + region[1]
     for x, y in zip(matchx, matchy):
-        yield Box(x, y, needleWidth, needleHeight)
+        yield Box(x // scale, y // scale , needleWidth // scale, needleHeight // scale)
 
 
-def _locateAll_pillow(needleImage, haystackImage, grayscale=None, limit=None, region=None, step=1, confidence=None):
+def _locateAll_pillow(needleImage, haystackImage, grayscale=None, limit=None, region=None, step=1, confidence=None, debug=None):
     """
     TODO
     """
@@ -311,7 +353,7 @@ def _locateAll_pillow(needleImage, haystackImage, grayscale=None, limit=None, re
     haystackImageData = tuple(haystackImage.getdata())
 
     needleImageRows = [
-        needleImageData[y * needleWidth : (y + 1) * needleWidth] for y in range(needleHeight)
+        needleImageData[y * needleWidth: (y + 1) * needleWidth] for y in range(needleHeight)
     ]  # LEFT OFF - check this
     needleImageFirstRow = needleImageRows[0]
 
@@ -324,7 +366,7 @@ def _locateAll_pillow(needleImage, haystackImage, grayscale=None, limit=None, re
 
     numMatchesFound = 0
 
-    # NOTE: After running tests/benchmarks.py on the following code, it seem that having a step
+    # NOTE: After running tests/benchmarks.py on the following code, it seems that having a step
     # value greater than 1 does not give *any* significant performance improvements.
     # Since using a step higher than 1 makes for less accurate matches, it will be
     # set to 1.
@@ -337,14 +379,14 @@ def _locateAll_pillow(needleImage, haystackImage, grayscale=None, limit=None, re
 
     for y in range(haystackHeight):  # start at the leftmost column
         for matchx in firstFindFunc(
-            needleImageFirstRow, haystackImageData[y * haystackWidth : (y + 1) * haystackWidth], step
+            needleImageFirstRow, haystackImageData[y * haystackWidth: (y + 1) * haystackWidth], step
         ):
             foundMatch = True
             for searchy in range(1, needleHeight, step):
                 haystackStart = (searchy + y) * haystackWidth + matchx
                 if (
-                    needleImageData[searchy * needleWidth : (searchy + 1) * needleWidth]
-                    != haystackImageData[haystackStart : haystackStart + needleWidth]
+                    needleImageData[searchy * needleWidth: (searchy + 1) * needleWidth]
+                    != haystackImageData[haystackStart: haystackStart + needleWidth]
                 ):
                     foundMatch = False
                     break
@@ -379,6 +421,7 @@ def locate(needleImage, haystackImage, **kwargs):
     """
     # Note: The gymnastics in this function is because we want to make sure to exhaust the iterator so that
     # the needle and haystack files are closed in locateAll.
+
     kwargs['limit'] = 1
     points = tuple(locateAll(needleImage, haystackImage, **kwargs))
     if len(points) > 0:
@@ -401,16 +444,23 @@ def locateOnScreen(image, minSearchTime=0, **kwargs):
         try:
             # the locateAll() function must handle cropping to return accurate coordinates,
             # so don't pass a region here.
-            screenshotIm = screenshot(region=None)
+            if kwargs.get('debug') is not None:
+                screenshotIm = screenshot("debug.png", region=None)
+                resultIm = screenshotIm.copy()
+            else:
+                screenshotIm = screenshot(region=None)
             retVal = locate(image, screenshotIm, **kwargs)
             try:
                 screenshotIm.fp.close()
             except AttributeError:
-                # Screenshots on Windows won't have an fp since they came from
+                # Screenshots on Windows won't have a fp since they came from
                 # ImageGrab, not a file. Screenshots on Linux will have fp set
                 # to None since the file has been unlinked
                 pass
             if retVal or time.time() - start > minSearchTime:
+                if kwargs.get('debug') is not None:
+
+                    resultIm.save("result.png")
                 return retVal
         except ImageNotFoundException:
             if time.time() - start > minSearchTime:
@@ -433,7 +483,7 @@ def locateAllOnScreen(image, **kwargs):
     try:
         screenshotIm.fp.close()
     except AttributeError:
-        # Screenshots on Windows won't have an fp since they came from
+        # Screenshots on Windows won't have a fp since they came from
         # ImageGrab, not a file. Screenshots on Linux will have fp set
         # to None since the file has been unlinked
         pass
@@ -451,12 +501,14 @@ def locateCenterOnScreen(image, **kwargs):
         return center(coords)
 
 
-def locateOnScreenNear(image, x, y):
+def locateOnScreenNear(image, x, y, **kwargs):
     """
     TODO
     """
 
-    foundMatchesBoxes = list(locateAllOnScreen(image))
+    foundMatchesBoxes = list(locateAllOnScreen(image, **kwargs))
+    if len(foundMatchesBoxes) == 0:
+        return None
 
     distancesSquared = []  # images[i] is related to distancesSquared[i]
     shortestDistanceIndex = 0  # The index of the shortest distance in `distances`
@@ -504,6 +556,26 @@ def locateOnWindow(image, title, **kwargs):
     return locateOnScreen(image, region=(win.left, win.top, win.width, win.height), **kwargs)
 
 
+@requiresPyWinCtl
+def locateOnWindow_winctl(image, title, **kwargs):
+    """
+    TODO
+    """
+    matchingWindows = pywinctl.getWindowsWithTitle(title)
+    if len(matchingWindows) == 0:
+        raise PyScreezeException('Could not find a window with %s in the title' % (title))
+    elif len(matchingWindows) > 1:
+        raise PyScreezeException(
+            'Found multiple windows with %s in the title: %s' % (title, [str(win) for win in matchingWindows])
+        )
+
+    win = matchingWindows[0]
+    win.activate()
+    # if retina double the values
+    return locateOnScreen(image, region=(win.left*scale, win.top*scale,
+                                         win.width*scale, win.height*scale), **kwargs)
+
+
 @requiresPyGetWindow
 def screenshotWindow(title):
     """
@@ -538,7 +610,9 @@ def _screenshot_win32(imageFilename=None, region=None, allScreens=False):
     im = ImageGrab.grab(all_screens=allScreens)
     if region is not None:
         assert len(region) == 4, 'region argument must be a tuple of four ints'
-        assert isinstance(region[0], int) and isinstance(region[1], int) and isinstance(region[2], int) and isinstance(region[3], int), 'region argument must be a tuple of four ints'
+        assert (isinstance(region[0], int) and isinstance(region[1], int)
+                and isinstance(region[2], int)
+                and isinstance(region[3], int)), 'region argument must be a tuple of four ints'
         im = im.crop((region[0], region[1], region[2] + region[0], region[3] + region[1]))
     if imageFilename is not None:
         im.save(imageFilename)
@@ -563,7 +637,9 @@ def _screenshot_osx(imageFilename=None, region=None):
 
         if region is not None:
             assert len(region) == 4, 'region argument must be a tuple of four ints'
-            assert isinstance(region[0], int) and isinstance(region[1], int) and isinstance(region[2], int) and isinstance(region[3], int), 'region argument must be a tuple of four ints'
+            assert (isinstance(region[0], int) and isinstance(region[1], int)
+                    and isinstance(region[2], int)
+                    and isinstance(region[3], int)), 'region argument must be a tuple of four ints'
             im = im.crop((region[0], region[1], region[2] + region[0], region[3] + region[1]))
             os.unlink(tmpFilename)  # delete image of entire screen to save cropped version
             im.save(tmpFilename)
@@ -614,7 +690,8 @@ def _screenshot_linux(imageFilename=None, region=None):
         else:
             # Return just a region of the screenshot.
             assert len(region) == 4, 'region argument must be a tuple of four ints'  # TODO fix this
-            assert isinstance(region[0], int) and isinstance(region[1], int) and isinstance(region[2], int) and isinstance(region[3], int), 'region argument must be a tuple of four ints'
+            assert (isinstance(region[0], int) and isinstance(region[1], int) and isinstance(region[2], int)
+                    and isinstance(region[3], int)), 'region argument must be a tuple of four ints'
             im = im.crop((region[0], region[1], region[2] + region[0], region[3] + region[1]))
             return im
     elif RUNNING_X11 and SCROT_EXISTS:  # scrot only runs on X11, not on Wayland.
@@ -636,7 +713,8 @@ def _screenshot_linux(imageFilename=None, region=None):
 
     if region is not None:
         assert len(region) == 4, 'region argument must be a tuple of four ints'
-        assert isinstance(region[0], int) and isinstance(region[1], int) and isinstance(region[2], int) and isinstance(region[3], int), 'region argument must be a tuple of four ints'
+        assert (isinstance(region[0], int) and isinstance(region[1], int) and isinstance(region[2], int)
+                and isinstance(region[3], int)), 'region argument must be a tuple of four ints'
         im = im.crop((region[0], region[1], region[2] + region[0], region[3] + region[1]))
         os.unlink(tmpFilename)  # delete image of entire screen to save cropped version
         im.save(tmpFilename)
@@ -703,8 +781,8 @@ def center(coords: Union[Box, tuple[int, int, int, int]]) -> Point:
     Point(x=14, y=15)
     """
 
-    # added code to handle a Box namedtuple. : Done
-    if isinstance(coords,Box):
+    # NCdG: added code to handle a Box namedtuple. : Done
+    if isinstance(coords, Box):
         return Point(coords.left + int(coords.height / 2), coords.top + int(coords.width / 2))
 
     return Point(coords[0] + int(coords[2] / 2), coords[1] + int(coords[3] / 2))
@@ -722,7 +800,9 @@ def pixelMatchesColor(x, y, expectedRGBColor, tolerance=0):
     # pixelMatchesColor((x, y), rgb) instead of pixelMatchesColor(x, y, rgb).
     # Lets correct that for the 1.0 release.
     if isinstance(x, collections.abc.Sequence) and len(x) == 2:
-        raise TypeError('pixelMatchesColor() has updated and no longer accepts a tuple of (x, y) values for the first argument. Pass these arguments as two separate arguments instead: pixelMatchesColor(x, y, rgb) instead of pixelMatchesColor((x, y), rgb)')
+        raise TypeError('pixelMatchesColor() has updated and no longer accepts a tuple of (x, y) values '
+                        'for the first argument. Pass these arguments as two separate arguments '
+                        'instead: pixelMatchesColor(x, y, rgb) instead of pixelMatchesColor((x, y), rgb)')
 
     pix = pixel(x, y)
     if len(pix) == 3 or len(expectedRGBColor) == 3:  # RGB mode
@@ -754,8 +834,8 @@ def pixel(x, y):
     # pixel((x, y), rgb) instead of pixel(x, y, rgb).
     # Lets correct that for the 1.0 release.
     if isinstance(x, collections.abc.Sequence) and len(x) == 2:
-        raise TypeError('pixel() has updated and no longer accepts a tuple of (x, y) values for the first argument. Pass these arguments as two separate arguments instead: pixel(x, y) instead of pixel((x, y))')
-
+        raise TypeError('pixel() has updated and no longer accepts a tuple of (x, y) values for the first argument. '
+                        'Pass these arguments as two separate arguments instead: pixel(x, y) instead of pixel((x, y))')
 
     if sys.platform == 'win32':
         # On Windows, calling GetDC() and GetPixel() is twice as fast as using our screenshot() function.
@@ -763,19 +843,41 @@ def pixel(x, y):
             color = windll.gdi32.GetPixel(hdc, x, y)
             if color < 0:
                 raise WindowsError("windll.gdi32.GetPixel failed : return {}".format(color))
-            # color is in the format 0xbbggrr https://msdn.microsoft.com/en-us/library/windows/desktop/dd183449(v=vs.85).aspx
+            # color is in the format 0xbbggrr
+            # https://msdn.microsoft.com/en-us/library/windows/desktop/dd183449(v=vs.85).aspx
             bbggrr = "{:0>6x}".format(color)  # bbggrr => 'bbggrr' (hex)
-            b, g, r = (int(bbggrr[i : i + 2], 16) for i in range(0, 6, 2))
-            return (r, g, b)
+            b, g, r = (int(bbggrr[i: i + 2], 16) for i in range(0, 6, 2))
+            return r, g, b
     else:
         # Need to select only the first three values of the color in
         # case the returned pixel has an alpha channel
         return RGB(*(screenshot().getpixel((x, y))[:3]))
 
 
+def get_screens_info_osx() -> list[tuple[int, int, int]]:
+    # credits: https://gist.github.com/justvanrossum/9843bf52d93cbe1c7a3f37420bea8d34
+    from AppKit import NSScreen, NSDeviceSize, NSDeviceResolution
+    from Quartz import CGDisplayScreenSize
+
+    info = []
+    for i, screen in enumerate(NSScreen.screens(), 1):
+        description = screen.deviceDescription()
+        pw, ph = description[NSDeviceSize].sizeValue()
+        rx, ry = description[NSDeviceResolution].sizeValue()
+        mmw, mmh = CGDisplayScreenSize(description["NSScreenNumber"])
+        scale_factor = screen.backingScaleFactor()
+        pw *= scale_factor
+        ph *= scale_factor
+        print(f"display #{i}: {mmw:.1f}×{mmh:.1f} mm; {pw:.0f}×{ph:.0f} pixels; {rx:.0f}×{ry:.0f} dpi")
+        info.append((pw, ph, int(scale_factor)))
+    return info
+
+
 # set the screenshot() function based on the platform running this module
+scale = 1
 if sys.platform == 'darwin':
     screenshot = _screenshot_osx
+    scale = get_screens_info_osx()[0][2] # first screen
 elif sys.platform == 'win32':
     screenshot = _screenshot_win32
 elif sys.platform.startswith('linux'):

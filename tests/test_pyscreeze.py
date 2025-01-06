@@ -3,6 +3,7 @@ import sys
 import os
 from collections.abc import Iterable
 import pyscreeze
+from pyscreeze import PyScreezeException
 
 _useOpenCV: bool = False
 try:
@@ -31,11 +32,12 @@ def recursiveAssertAlmostEqual(testCase, first, second, *args, **kwargs):
       testCase.assertAlmostEqual(first, second, *args, **kwargs)
 
 
-def get_screens_resolution() -> list[tuple[int, int]]:
+def get_screens_info() -> list[tuple[int, int,int]]:
+    # credits: https://gist.github.com/justvanrossum/9843bf52d93cbe1c7a3f37420bea8d34
     from AppKit import NSScreen, NSDeviceSize, NSDeviceResolution
     from Quartz import CGDisplayScreenSize
 
-    resolutions = []
+    info = []
     for i, screen in enumerate(NSScreen.screens(), 1):
         description = screen.deviceDescription()
         pw, ph = description[NSDeviceSize].sizeValue()
@@ -45,9 +47,9 @@ def get_screens_resolution() -> list[tuple[int, int]]:
         pw *= scale_factor
         ph *= scale_factor
         print(f"display #{i}: {mmw:.1f}×{mmh:.1f} mm; {pw:.0f}×{ph:.0f} pixels; {rx:.0f}×{ry:.0f} dpi")
-        resolutions.append((pw, ph))
+        info.append((pw, ph, scale_factor))
 
-    return resolutions
+    return info
 
 
 # Change the cwd to this file's folder, because that's where the test image files are located.
@@ -86,8 +88,8 @@ def resolution_osx():
 
 def resolution_osx_2():
     """ returns the 'real' resolution of the first screen"""
-    screens_resolution = get_screens_resolution()
-    return screens_resolution[0]
+    screens_info = get_screens_info()
+    return screens_info[0][2:]
 
 
 def resolutionX11():
@@ -106,10 +108,17 @@ def resolutionWin32():
     return ctypes.windll.user32.GetSystemMetrics(0), ctypes.windll.user32.GetSystemMetrics(1)
 
 
+def scale_osx():
+    screens_info = get_screens_info()
+    return screens_info[0][2]
+
+
 # Assign the resolution() function to the function appropriate for the platform.
+scale = 1
 if sys.platform == 'darwin':
     import Quartz
     resolution = resolution_osx_2
+    scale = scale_osx()
 elif sys.platform == 'win32':
     import ctypes
     resolution = resolutionWin32
@@ -369,6 +378,36 @@ class TestGeneral(unittest.TestCase):
         haystack2Fp.close()
         colorNoiseFp.close()
         """
+
+    def test_locateOnWindow_winctl(self):
+
+        # mainimage_fn = 'zophie.png'
+        needle_fn = 'zophie_face.png'
+
+        # mainimage_fp = open(mainimage_fn, 'rb')
+        # mainimage_img = Image.open(mainimage_fp)
+        # needle_fp = open(needle_fn, 'rb')
+        # needle_img = Image.open(needle_fp)
+
+        needle_img = cv2.imread(needle_fn, cv2.IMREAD_COLOR)
+
+        # note: img.show(title="zophie.png") title is only supported on linux: xv
+        # We select an open app-window. Make sure target is there:
+        # For example, open Preview on MacOS with target image visible
+        try:
+            # if on retina double the size
+            #  (width, height) = (needle_img.width * scale, neeldle_img.height * scale)
+            needle_img = cv2.resize(needle_img, (0,0), fx=scale, fy=scale)
+
+            box = pyscreeze.locateOnWindow_winctl(needle_img,'zophie.png', confidence=0.8, debug=True)
+        except (PyScreezeException, pyscreeze.ImageNotFoundException) as e:
+            if 'Could not find a window' in str(e):
+                self.fail(f"You need to open the mainimage {zophie_fn} in Preview or Paint")
+            else:
+                self.fail(str(e))
+        else:
+            self.assertEqual((399, 421, 235, 206), tuple(box))
+
 
 class TestStressTest(unittest.TestCase):
     def test_1000screenshots(self):
